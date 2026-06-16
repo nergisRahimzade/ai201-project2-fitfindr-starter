@@ -7,7 +7,7 @@ can be called and tested independently before being wired into the agent loop.
 Complete and test each tool before moving to agent.py.
 
 Tools:
-    search_listings(description, size, max_price)  → list[dict]
+    search_listings(description, size, max_price)  → dict | None
     suggest_outfit(new_item, wardrobe)              → str
     create_fit_card(outfit, new_item)               → str
 """
@@ -40,7 +40,7 @@ def search_listings(
     description: str,
     size: str | None = None,
     max_price: float | None = None,
-) -> list[dict]:
+) -> dict | None:
     """
     Search the mock listings dataset for items matching the description,
     optional size, and optional price ceiling.
@@ -53,24 +53,88 @@ def search_listings(
         max_price:   Maximum price (inclusive), or None to skip price filtering.
 
     Returns:
-        A list of matching listing dicts, sorted by relevance (best match first).
-        Returns an empty list if nothing matches — does NOT raise an exception.
-
-    Each listing dict has the following fields:
-        id, title, description, category, style_tags (list), size,
-        condition, price (float), colors (list), brand, platform
+        The single best-matching listing as a dict with the fields
+        {title, price, platform, condition}, or None if nothing matches.
+        Never raises — a failed/empty search returns None.
 
     TODO:
         1. Load all listings with load_listings().
         2. Filter by max_price and size (if provided).
         3. Score each remaining listing by keyword overlap with `description`.
         4. Drop any listings with a score of 0 (no relevant matches).
-        5. Sort by score, highest first, and return the listing dicts.
+        5. Return the highest-scoring listing, trimmed to the fields above
+           (or None if no listing scores above 0).
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    try:
+        listings = load_listings()
+    except (OSError, ValueError):
+        return None
+
+    keywords = _tokenize(description)
+    best_listing = None
+    best_score = 0
+    for listing in listings:
+        if max_price is not None and listing.get("price", 0) > max_price:
+            continue
+        if size and not _size_matches(size, listing.get("size", "")):
+            continue
+
+        listing_text = " ".join([
+            listing.get("title", ""),
+            listing.get("description", ""),
+            listing.get("category", ""),
+            listing.get("brand") or "",
+            *(listing.get("style_tags") or []),
+            *(listing.get("colors") or []),
+        ])
+        score = len(keywords & _tokenize(listing_text))
+
+        # Keep the highest-scoring match so far (first wins on a tie).
+        if score > best_score:
+            best_score = score
+            best_listing = listing
+
+    if best_listing is None:
+        return None
+    return {
+        field: best_listing.get(field)
+        for field in ("title", "price", "platform", "condition")
+    }
+
+
+# ── search_listings helpers ─────────────────────────────────────────────────
+
+# Common filler words that carry no matching signal for a clothing search.
+_STOPWORDS = {
+    "a", "an", "and", "the", "for", "with", "looking", "want", "need", "find",
+    "some", "any", "im", "size", "price", "priced", "cheap", "affordable",
+    "under", "below", "less", "than", "max", "maximum",
+}
+
+
+def _tokenize(text: str) -> set[str]:
+    """Lowercase `text` into a set of meaningful keyword tokens, dropping
+    punctuation, pure numbers (prices/sizes), and short filler words."""
+    cleaned = "".join(ch.lower() if ch.isalnum() else " " for ch in text or "")
+    return {
+        tok for tok in cleaned.split()
+        if len(tok) >= 2 and not tok.isdigit() and tok not in _STOPWORDS
+    }
+
+
+def _size_tokens(size: str) -> set[str]:
+    """Split a size string into lowercase tokens on any non-alphanumeric
+    separator: "S/M" -> {"s", "m"}, "XL (oversized)" -> {"xl", "oversized"}."""
+    return set("".join(c.lower() if c.isalnum() else " " for c in size).split())
+
+
+def _size_matches(requested: str, listing_size: str) -> bool:
+    """Case-insensitive size match: true if any requested size token appears as
+    a whole token in the listing's size ("M" matches "S/M", "W30" matches
+    "W30 L30"). Token matching avoids "S" wrongly matching "oversized"."""
+    return bool(_size_tokens(requested) & _size_tokens(listing_size))
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
