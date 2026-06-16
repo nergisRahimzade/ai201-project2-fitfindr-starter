@@ -172,7 +172,8 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
 # ── suggest_outfit helpers ───────────────────────────────────────────────────
 
-_OUTFIT_MODEL = "llama-3.3-70b-versatile"
+# Both LLM-backed tools (suggest_outfit, create_fit_card) use this model.
+_LLM_MODEL = "llama-3.3-70b-versatile"
 
 # Conditions considered "at least GOOD" for the affordable-pieces fallback.
 _GOOD_CONDITIONS = {"good", "excellent"}
@@ -223,7 +224,7 @@ def _suggest_with_wardrobe(new_item: dict, items: list[dict]) -> str | None:
     try:
         client = _get_groq_client()
         response = client.chat.completions.create(
-            model=_OUTFIT_MODEL,
+            model=_LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
         )
@@ -297,5 +298,53 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # 1. Guard against an empty/whitespace outfit or a missing item — per
+    #    planning.md, incomplete outfit data returns a descriptive message.
+    if not outfit or not outfit.strip() or not new_item:
+        return _INCOMPLETE_FIT_CARD_MSG
+
+    # 2/3. Build the prompt, call the LLM, and return the caption.
+    caption = _generate_fit_card(outfit, new_item)
+    if caption and caption.strip():
+        return caption
+    return _INCOMPLETE_FIT_CARD_MSG
+
+
+# ── create_fit_card helpers ──────────────────────────────────────────────────
+
+_INCOMPLETE_FIT_CARD_MSG = (
+    "Sorry, I couldn't generate a fit card because the outfit is incomplete."
+)
+
+
+def _generate_fit_card(outfit: str, new_item: dict) -> str | None:
+    """Ask the LLM for a short, shareable OOTD caption. Returns the caption,
+    or None if the LLM call fails (so the caller falls back gracefully —
+    this function never raises)."""
+    price = new_item.get("price")
+    platform = new_item.get("platform")
+    price_str = f"${price:.2f}" if isinstance(price, (int, float)) else "a steal"
+
+    prompt = (
+        "Write a short, casual Instagram/TikTok OOTD caption (2–4 sentences) "
+        "for a thrifted find. It should feel authentic and personal, like a "
+        "real outfit-of-the-day post — not a product description.\n\n"
+        f"The standout piece: {_describe_item(new_item)}.\n"
+        f"Snagged it for {price_str}"
+        + (f" on {platform}.\n" if platform else ".\n")
+        + f"\nThe outfit:\n{outfit}\n\n"
+        "Mention the item name, its price, and the platform naturally — once "
+        "each. Capture the outfit's vibe in specific terms. No hashtag spam, "
+        "no preamble — just the caption."
+    )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model=_LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.9,  # higher temp → a different caption each time
+        )
+        return response.choices[0].message.content
+    except Exception:
+        return None
