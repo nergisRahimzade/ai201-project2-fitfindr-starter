@@ -73,35 +73,20 @@ def search_listings(
         return None
 
     keywords = _tokenize(description)
-    best_listing = None
-    best_score = 0
+    best, best_score = None, 0
     for listing in listings:
         if max_price is not None and listing.get("price", 0) > max_price:
             continue
         if size and not _size_matches(size, listing.get("size", "")):
             continue
-
-        listing_text = " ".join([
-            listing.get("title", ""),
-            listing.get("description", ""),
-            listing.get("category", ""),
-            listing.get("brand") or "",
-            *(listing.get("style_tags") or []),
-            *(listing.get("colors") or []),
-        ])
-        score = len(keywords & _tokenize(listing_text))
-
-        # Keep the highest-scoring match so far (first wins on a tie).
+        # Score by keyword overlap; keep the best (first wins on a tie).
+        score = len(keywords & _tokenize(_searchable_text(listing)))
         if score > best_score:
-            best_score = score
-            best_listing = listing
+            best, best_score = listing, score
 
-    if best_listing is None:
+    if best is None:
         return None
-    return {
-        field: best_listing.get(field)
-        for field in ("title", "price", "platform", "condition")
-    }
+    return {f: best.get(f) for f in ("title", "price", "platform", "condition")}
 
 
 # ── search_listings helpers ─────────────────────────────────────────────────
@@ -122,6 +107,18 @@ def _tokenize(text: str) -> set[str]:
         tok for tok in cleaned.split()
         if len(tok) >= 2 and not tok.isdigit() and tok not in _STOPWORDS
     }
+
+
+def _searchable_text(item: dict) -> str:
+    """Join an item's text fields into one blob for keyword matching."""
+    return " ".join([
+        item.get("title") or item.get("name") or "",
+        item.get("description", ""),
+        item.get("category", ""),
+        item.get("brand") or "",
+        *(item.get("style_tags") or []),
+        *(item.get("colors") or []),
+    ])
 
 
 def _size_tokens(size: str) -> set[str]:
@@ -164,8 +161,111 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    items = (wardrobe or {}).get("items") or []
+
+    if items:
+        suggestion = _suggest_with_wardrobe(new_item, items)
+        if suggestion and suggestion.strip():
+            return suggestion
+    return _affordable_fallback(new_item)
+
+
+# ── suggest_outfit helpers ───────────────────────────────────────────────────
+
+_OUTFIT_MODEL = "llama-3.3-70b-versatile"
+
+# Conditions considered "at least GOOD" for the affordable-pieces fallback.
+_GOOD_CONDITIONS = {"good", "excellent"}
+
+_NO_OUTFIT_MSG = (
+    "Sorry, I couldn't find a suitable outfit with your current wardrobe."
+)
+_FALLBACK_PREFIX = (
+    _NO_OUTFIT_MSG + " But here are a few affordable pieces that will go "
+    "along with your new item: "
+)
+
+
+def _describe_item(item: dict) -> str:
+    """Compact one-line description of a listing/new item for an LLM prompt."""
+    parts = [item.get("title") or item.get("name") or "item"]
+    if item.get("category"):
+        parts.append(f"({item['category']})")
+    if item.get("style_tags"):
+        parts.append("style: " + ", ".join(item["style_tags"]))
+    if item.get("colors"):
+        parts.append("colors: " + ", ".join(item["colors"]))
+    if item.get("condition"):
+        parts.append(f"condition: {item['condition']}")
+    return " — ".join(parts)
+
+
+def _suggest_with_wardrobe(new_item: dict, items: list[dict]) -> str | None:
+    """Ask the LLM to build 1–2 outfits from the new item + wardrobe pieces.
+    Returns the suggestion text, or None if the LLM call fails (so the caller
+    can fall back gracefully — this function never raises)."""
+    wardrobe_lines = "\n".join(f"- {_describe_item(w)}" for w in items)
+    style_tags = ", ".join(new_item.get("style_tags") or []) or "its overall look"
+
+    prompt = (
+        "You are a thrift-fashion stylist. A shopper is considering this "
+        "second-hand item:\n"
+        f"  {_describe_item(new_item)}\n\n"
+        "Here is their current wardrobe:\n"
+        f"{wardrobe_lines}\n\n"
+        "Suggest 1–2 complete outfits that pair the new item with specific, "
+        "named pieces from their wardrobe above. Lean into the vibe of the "
+        f"new item ({style_tags}). For each outfit, name the exact wardrobe "
+        "pieces you'd combine and add a short styling tip (how to wear/layer "
+        "it). Keep it friendly and concrete — no preamble."
+    )
+
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model=_OUTFIT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
+    except Exception:
+        # Network/auth/parse failure counts as "no outfit could be suggested".
+        return None
+
+
+def _affordable_fallback(new_item: dict) -> str:
+    """Per planning.md: a fallback message plus up to 2 cheap, at-least-good
+    condition listings that match the new item. If nothing fits, return the
+    message alone (the agent stops and does not call create_fit_card)."""
+    try:
+        listings = load_listings()
+    except (OSError, ValueError):
+        listings = []
+
+    item_keywords = _tokenize(_searchable_text(new_item))
+    new_title = (new_item.get("title") or "").strip().lower()
+
+    matches = []
+    for listing in listings:
+        if listing.get("condition") not in _GOOD_CONDITIONS:
+            continue
+        if (listing.get("title") or "").strip().lower() == new_title:
+            continue  # don't recommend the item back to itself
+        score = len(item_keywords & _tokenize(_searchable_text(listing)))
+        if score:
+            matches.append((score, listing))
+
+    if not matches:
+        return _NO_OUTFIT_MSG
+
+    # Cheapest first (must be affordable), breaking ties by relevance.
+    matches.sort(key=lambda pair: (pair[1].get("price", 0.0), -pair[0]))
+    picks = [listing for _, listing in matches[:2]]
+    summaries = [
+        f"{p['title']} (${p['price']:.2f}, {p['condition']}, {p['platform']})"
+        for p in picks
+    ]
+    return _FALLBACK_PREFIX + "; ".join(summaries)
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────

@@ -198,6 +198,13 @@ When implementing it, take the todo list written in comment lines into account. 
 
 I used Claude to implement search_listings() tool with the details I filled in planning.md before any implementation.
 
+This is my prompt that I used when implementing tool 2:
+
+"
+Okay, now I want you to implement the second tool - suggest_outfit() in @tools.py . Follow the Todo list when implementing the tool and take the Tools -> Tool 2, Error Handling, State Management  and Architechture of  @browser: @planning.md  into account when handling the inputs, outputs, edge cases. For LLM use llama-3.3-70b-versatile model via Groq API. Summarize everything you do at the end of your response
+"
+I used Claude to implement suggest_outfit() tool with the details I filled in planning.md before any implementation.
+
 **Milestone 4 — Planning loop and state management:**
 
 ---
