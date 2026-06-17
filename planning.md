@@ -92,6 +92,10 @@ If what the output user wants to see requires the 2nd tool - suggest_outfit() - 
 
 The same goes for the 3rd tool - create_fit_card(). If the output is not empty and has the format the user needs to see, it will be returned as the final output. If the output is empty or doesn't have the required format, it will execute the fallback strategy and not return a fit card.
 
+**Implementation note (added during Milestone 4):**
+- *Query parsing (Step 2):* the free-text query is parsed with **regex** (not an LLM) into `description`, `size`, and `max_price` — e.g. "under $30" → `max_price=30.0`, "size M" → `size="M"`, with those phrases stripped from the description. See `_parse_query()` in agent.py.
+- *Concrete branch points:* "empty / wrong format" became two explicit STOP conditions. **Branch A:** `search_listings()` returns `[]` → set `error`, do not call `suggest_outfit`. **Branch B:** `suggest_outfit()` returns its fallback message (empty/unworkable wardrobe) → keep that message but do not call `create_fit_card` (`fit_card` stays `None`).
+
 ---
 
 ## State Management
@@ -138,12 +142,12 @@ Planning Loop
     │
     ├─► search_listings(description, size, max_price)
     │       │
-    │       ├── returns None ───► "Sorry, I couldn't find any items matching
-    │       │   (no match)        your criteria."  → STOP
+    │       ├── returns [] ─────► "Sorry, I couldn't find any items matching
+    │       │   (no match)        your criteria. Try removing a filter…"  → STOP
     │       │
-    │       │ returns {title, price, platform, condition}  (single best match)
+    │       │ results=[item, ...]  (full listing dicts, sorted by relevance)
     │       ▼
-    │   Session: found_item = search_listings(...)
+    │   Session: search_results = results; selected_item = results[0]
     │       │
     ├─► suggest_outfit(found_item, wardrobe)
     │       │
@@ -215,6 +219,19 @@ At the end of your response, please summarize everything again.
 I used Claude to implement create_fit_card() tool with the details I filled in planning.md before any implementation.
 
 **Milestone 4 — Planning loop and state management:**
+
+I gave Claude the full Architecture diagram plus the Planning Loop and State Management
+sections and asked it to implement `run_agent()`. I reviewed the generated code against
+three checks before trusting it: (1) does it branch on the `search_listings` result
+instead of always calling all three tools, (2) does it read/write the session dict at
+each step, and (3) does it stop early on the no-results and empty-wardrobe paths. I kept
+the two-branch structure, chose regex (over an LLM) for query parsing, and added
+state-identity assertions to `python agent.py` to prove state flows between tools.
+
+**Milestone 5 — Failure-mode testing:** I triggered each tool's failure path from the
+terminal (impossible query → `[]`; empty wardrobe → affordable-pieces fallback; empty
+outfit → descriptive error) and confirmed none raise. Results recorded in the README
+error-handling table.
 
 ---
 

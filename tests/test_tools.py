@@ -15,17 +15,17 @@ needs_llm = pytest.mark.skipif(
 # ── search_listings ──────────────────────────────────────────────────────────
 
 def test_search_returns_match():
-    result = search_listings("vintage graphic tee", size=None, max_price=50)
-    assert isinstance(result, dict)
-    assert set(result) == {"title", "price", "platform", "condition"}
+    results = search_listings("vintage graphic tee", size=None, max_price=50)
+    assert isinstance(results, list) and len(results) > 0
+    assert isinstance(results[0], dict)
 
 def test_search_empty_results():
-    result = search_listings("designer ballgown", size="XXS", max_price=5)
-    assert result is None   # None, no exception
+    results = search_listings("designer ballgown", size="XXS", max_price=5)
+    assert results == []   # empty list, no exception
 
 def test_search_price_filter():
-    result = search_listings("jacket", size=None, max_price=10)
-    assert result is None or result["price"] <= 10
+    results = search_listings("jacket", size=None, max_price=10)
+    assert all(item["price"] <= 10 for item in results)
 
 
 # ── suggest_outfit ───────────────────────────────────────────────────────────
@@ -78,9 +78,10 @@ def test_fit_card_returns_caption():
 
 @needs_llm
 def test_full_pipeline_search_suggest_fit_card():
-    # Tool 1: find a matching item.
-    item = search_listings("vintage graphic tee", size=None, max_price=50)
-    assert isinstance(item, dict)
+    # Tool 1: find matching items and take the top result.
+    results = search_listings("vintage graphic tee", size=None, max_price=50)
+    assert isinstance(results, list) and results
+    item = results[0]
 
     # Tool 2: suggest an outfit from a real wardrobe (live LLM).
     outfit = suggest_outfit(item, get_example_wardrobe())
